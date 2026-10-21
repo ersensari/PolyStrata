@@ -485,8 +485,9 @@ protected:
     void h2d(void* dst, const void* src, size_t bytes);
     void zero_vram(void* dst, size_t bytes);
     /// An attention cache for alloc_caches(): `bytes` for every `per` rows, with addresses for the whole context
-    /// and VRAM for the rows the sequence has reached (cover()).
-    void* kv_alloc(size_t bytes, int per);
+    /// and VRAM for the rows the sequence has reached (cover()). `host` is the CUDA-only experiment: the whole
+    /// cache is instead pinned in system RAM and mapped for GPU access, without a device-resident copy.
+    void* kv_alloc(size_t bytes, int per, bool host = false);
     /// A buffer of the sequence's own that does not grow with it, such as a window layer's ring of rows.
     void* seq_alloc(size_t bytes, const char* what);
     /// VRAM in every attention cache for the rows below `end`, before a call writes them.

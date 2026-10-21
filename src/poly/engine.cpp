@@ -588,11 +588,24 @@ void Engine::vmm_free(Mapped& m) {
     m.base = 0;
 }
 
-void* Engine::kv_alloc(size_t bytes, int per) {
+void* Engine::kv_alloc(size_t bytes, int per, bool host) {
     if (again_ != SIZE_MAX) return bufs_.at(again_++).p;
     const size_t all = (size_t) ((opt_.max_context + per - 1) / per) * bytes;
     void* p = nullptr;
-    if (!vmm_ || !opt_.kv_grow) {
+    if (host) {
+#if !defined(GGML_USE_HIP)
+        void* h = nullptr;
+        ck(cudaHostAlloc(&h, std::max<size_t>(all, 256), cudaHostAllocMapped), "experimental host KV allocation");
+        const cudaError_t status = cudaHostGetDevicePointer(&p, h, 0);
+        if (status != cudaSuccess) {
+            cudaFreeHost(h);
+            ck(status, "experimental host KV mapping");
+        }
+        host_allocs_.push_back(h);
+#else
+        throw std::runtime_error("experimental host KV is CUDA-only");
+#endif
+    } else if (!vmm_ || !opt_.kv_grow) {
         p = dmalloc(all, "the attention cache");
     } else {
         Kv k;
@@ -726,6 +739,13 @@ void Engine::cover(int64_t end) {
     for (Kv& k : kv_)
         vmm_map(k, size(k), (size_t) ((kKvGrow + k.per - 1) / k.per) * k.bytes, "the attention cache");
     kv_rows_ = rows;
+    const char* diag = std::getenv("STRATA_POLY_KV_DIAGNOSTICS");
+    if (diag && std::string(diag) == "1") {
+        size_t mapped = 0;
+        for (const Kv& k : kv_) mapped += k.mapped;
+        std::fprintf(stderr, "strata-poly: KV diagnostic: %lld rows, %.1f MiB physically mapped in VRAM\n",
+                     (long long) rows, double(mapped) / (1 << 20));
+    }
 }
 
 int64_t Engine::kv_rows_for(int64_t end) const {

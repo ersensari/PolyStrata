@@ -129,6 +129,16 @@ int Qwen35::widest() const { return std::max(d_inner_, n_head_ * head_dim_); }
 
 // The attention layers' caches, and each recurrent layer's convolution and delta-rule state in state_.
 void Qwen35::alloc_caches() {
+    // A local experiment for Ornith's group-16 geometry: physical KV stays in pinned system RAM.
+    // Every GPU read crosses PCIe. This is a capacity experiment, not an assumed speed improvement.
+    bool host_kv = false;
+#if !defined(GGML_USE_HIP)
+    const char* host = std::getenv("STRATA_POLY_HOST_KV");
+    host_kv = head_dim_ == 256 && n_head_ == 16 * n_kv_ && host && std::string(host) == "1";
+#endif
+    if (host_kv && !axes_)
+        std::fprintf(stderr, "strata-poly: EXPERIMENTAL host KV: %.1f MiB pinned RAM, GPU reads over PCIe\n",
+                     double(card_row_bytes()) * opt_.max_context / (1 << 20));
     if (opt_.kv_format == KvFmt::kQ8_0 && !axes_) {
         const size_t row_bytes = (size_t) n_kv_ * head_dim_ + (size_t) n_kv_ * (head_dim_ / 32) * sizeof(uint16_t);
         std::fprintf(stderr, "strata-poly: q8_0 KV cache: %zu bytes a row\n", row_bytes);
@@ -147,13 +157,13 @@ void Qwen35::alloc_caches() {
         } else if (opt_.kv_format == KvFmt::kQ8_0) {
             const size_t codes_row = (size_t) n_kv_ * head_dim_;                            // int8
             const size_t scales_row = (size_t) n_kv_ * (head_dim_ / 32) * sizeof(uint16_t);  // fp16
-            B.k_codes = (int8_t*) kv_alloc(codes_row, 1);
-            B.k_scales = (uint16_t*) kv_alloc(scales_row, 1);
-            B.v_codes = (int8_t*) kv_alloc(codes_row, 1);
-            B.v_scales = (uint16_t*) kv_alloc(scales_row, 1);
+            B.k_codes = (int8_t*) kv_alloc(codes_row, 1, host_kv);
+            B.k_scales = (uint16_t*) kv_alloc(scales_row, 1, host_kv);
+            B.v_codes = (int8_t*) kv_alloc(codes_row, 1, host_kv);
+            B.v_scales = (uint16_t*) kv_alloc(scales_row, 1, host_kv);
         } else {
-            B.keys = (uint16_t*) kv_alloc(row, 1);
-            B.vals = (uint16_t*) kv_alloc(row, 1);
+            B.keys = (uint16_t*) kv_alloc(row, 1, host_kv);
+            B.vals = (uint16_t*) kv_alloc(row, 1, host_kv);
         }
     }
     chunk_ = (int) std::clamp<size_t>(kScoreFloats / ((size_t) n_head_ * opt_.max_context), 1, (size_t) rows_);
