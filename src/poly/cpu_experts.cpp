@@ -1,12 +1,16 @@
 // src/poly/cpu_experts.cpp - see the header.
 #include "cpu_experts.hpp"
 
+#include "strata/kernels/cpu/expert_layout.hpp"
+#include "strata/kernels/cpu/iq_avx512.hpp"
+
 #include "ggml.h"
 #include "ggml-cpu.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <cstdlib>
 #include <immintrin.h>
 #include <mutex>
 #include <numeric>
@@ -26,6 +30,17 @@ void init_once() {
     static std::once_flag once;
     std::call_once(once, [] { ggml_cpu_init(); });
 }
+
+// Opt-in reuse of the Qwen engine's IQ rows: one decode of the weight blocks for several
+// tokens that chose the same expert. Keep ggml's path unless explicitly enabled on a capable CPU.
+bool iq_multi(int type) {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_POLY_IQ_MT");
+        return v && std::strcmp(v, "1") == 0 && kernels::cpu::cpu_avx512_ok();
+    }();
+    return on && kernels::cpu::iq512_supported(type);
+}
+constexpr int kMultiRows = 8;   // Engine::moe()'s kCpuRows; larger groups use bounded chunks.
 
 thread_local bool in_task = false;   // this thread is running a task of a batch
 
@@ -173,6 +188,7 @@ void cpu_experts(Workers& workers, const CpuExpert* experts, int n, int rows, in
     const int n_run = (int) run.size();
     run.push_back(n);
 
+    const bool multi_gu = iq_multi(gu_type), multi_down = iq_multi(d_type);
     float* hp = h.data();
     const int* byp = by.data();
     const int* runp = run.data();
@@ -184,6 +200,36 @@ void cpu_experts(Workers& workers, const CpuExpert* experts, int n, int rows, in
         const int i0 = runp[t / gu_tasks], i1 = runp[t / gu_tasks + 1];
         const CpuExpert& e = experts[byp[i0]];
         const int r0 = (t % gu_tasks) * kRowsPerTask, r1 = std::min(n_ff, r0 + kRowsPerTask);
+        if (multi_gu && i1 - i0 > 1) {
+            // gate/up need not be adjacent, or even in the same GGUF shard. Address each
+            // tensor independently; local row indices keep the scratch pointers in bounds.
+            for (int at = i0; at < i1; at += kMultiRows) {
+                const int nt = std::min(kMultiRows, i1 - at), nr = r1 - r0;
+                const void* a[kMultiRows];
+                float g[kMultiRows][kRowsPerTask], u[kMultiRows][kRowsPerTask];
+                float *gp[kMultiRows], *up[kMultiRows];
+                for (int t = 0; t < nt; ++t) {
+                    a[t] = actp + (size_t) experts[byp[at + t]].row * a_bytes;
+                    gp[t] = g[t]; up[t] = u[t];
+                }
+                kernels::cpu::iq512_rows(gu_type, e.gate + (size_t) r0 * gu_row, gu_row,
+                                         n_embd, a, nt, gp, 0, nr);
+                kernels::cpu::iq512_rows(gu_type, e.up + (size_t) r0 * gu_row, gu_row,
+                                         n_embd, a, nt, up, 0, nr);
+                for (int t = 0; t < nt; ++t)
+                    for (int r = 0; r < nr; ++r) {
+                        float gg = g[t][r], uu = u[t][r];
+                        if (gelu) {
+                            hp[(size_t) byp[at + t] * n_ff + r0 + r] =
+                                0.5f * gg * (1.f + std::tanh(0.7978845608f * gg * (1.f + 0.044715f * gg * gg))) * uu;
+                        } else {
+                            gg = std::min(gg, limit); uu = std::clamp(uu, -limit, limit);
+                            hp[(size_t) byp[at + t] * n_ff + r0 + r] = gg / (1.f + std::exp(-gg)) * uu;
+                        }
+                    }
+            }
+            return;
+        }
         for (int r = r0; r < r1; ++r) {
             const uint8_t* gate = e.gate + (size_t) r * gu_row;
             const uint8_t* up = e.up + (size_t) r * gu_row;
@@ -214,6 +260,36 @@ void cpu_experts(Workers& workers, const CpuExpert* experts, int n, int rows, in
         one.resize((size_t) n);
         float* s = one.data();
         const int r0 = t * kRowsPerDownTask, r1 = std::min(n_embd, r0 + kRowsPerDownTask);
+        if (multi_down) {
+            static thread_local std::vector<float> block;
+            block.resize((size_t) n * kRowsPerDownTask);
+            const int nr = r1 - r0;
+            for (int u = 0; u < n_run; ++u) {
+                const int begin = runp[u], end = runp[u + 1];
+                const uint8_t* down = experts[byp[begin]].down + (size_t) r0 * d_row;
+                for (int at = begin; at < end; at += kMultiRows) {
+                    const int nt = std::min(kMultiRows, end - at);
+                    const void* a[kMultiRows]; float* result[kMultiRows];
+                    for (int t = 0; t < nt; ++t) {
+                        a[t] = hqp + (size_t) byp[at + t] * h_bytes;
+                        result[t] = block.data() + (size_t) byp[at + t] * kRowsPerDownTask;
+                    }
+                    if (nt > 1) kernels::cpu::iq512_rows(d_type, down, d_row, n_ff, a, nt, result, 0, nr);
+                    else for (int r = 0; r < nr; ++r)
+                        td->vec_dot(n_ff, result[0] + r, 0, down + (size_t) r * d_row, 0, a[0], 0, 1);
+                }
+            }
+            for (int r = 0; r < nr; ++r) {
+                int j = 0;
+                for (int row = 0; row < rows; ++row) {
+                    float acc = 0.f;
+                    for (; j < n && experts[j].row == row; ++j)
+                        acc += experts[j].weight * block[(size_t) j * kRowsPerDownTask + r];
+                    out[(size_t) row * n_embd + r0 + r] = acc;
+                }
+            }
+            return;
+        }
         for (int r = r0; r < r1; ++r) {
             for (int u = 0; u < n_run; ++u) {
                 const uint8_t* down = experts[byp[runp[u]]].down + (size_t) r * d_row;

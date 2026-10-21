@@ -151,6 +151,15 @@ writes one token and the server adds the two that llama.cpp puts around the rows
 - CUDA graphs for a token's fixed launches
 - the serve protocol, sampling, statistics
 
+Experimental CPU IQ reuse (`STRATA_POLY_IQ_MT=1`, off by default): on an AVX-512 CPU, several tokens
+that route to the same IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS or IQ3_S expert share the decoding of its weight
+blocks, using the first engine's IQ row kernels. Other formats and CPUs keep ggml's dot products. Gate/up
+and down can be in different GGUF shards; no expert packing is needed. Single-token gate/up groups keep
+ggml's path. The quantization, experts and routing weights are unchanged, but the IQ kernel's floating-point
+sum order differs: opt-in output is not bit-identical and may change subsequent tokens and MTP acceptance.
+The unset path remains unchanged. [The Ornith measurement](../bench/results/2026-10-21-ornith-iq-mt/README.md)
+records the small measured gain and what was not tested.
+
 An architecture is a class derived from `Engine` (`Glm5Next`, `Qwen35`, `Gemma4`). It supplies:
 
 | Hook | What it does |

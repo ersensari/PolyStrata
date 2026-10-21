@@ -1,0 +1,5 @@
+strata-poly: q8_0 KV cache: 544 bytes a row
+strata-poly: STRATA_FATTN: prompt attention through llama.cpp's flash-attention kernel
+strata-poly: STRATA_FDEC: decode attention through the tensor-core decode kernel
+strata-poly: loaded in 1.2 s; 1826 of 12544 routed experts in VRAM (6.4 GiB), 12 CPU threads
+prompt 31 tokens 39.5 tok/s, generated 256 tokens 34.44 tok/s (length); experts from VRAM 36.0%, CPU experts 21.6 ms/token, router wait 4.2 ms/token, 0 experts swapped into VRAM, 0 left out, 115 of 158 guessed tokens right

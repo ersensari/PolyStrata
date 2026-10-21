@@ -2061,14 +2061,14 @@ if(STRATA_NATIVE_EXPERTS AND (STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP) AND NOT S
   target_link_libraries(strata-poly PRIVATE strata_poly_mmq strata_kernels strata_spec ggml-cpu ggml-base
                                            ${_strata_gpu_blas_target} ${_strata_gpu_runtime_target}
                                            ${_strata_poly_driver}
-                                           Threads::Threads)
+                                           Threads::Threads strata_kernels_cpu)
   # needs the model file, so it is run by hand: poly_expert_parity MODEL.gguf
   add_executable(poly_expert_parity src/poly/expert_parity.cpp src/poly/cpu_experts.cpp src/poly/kernels.cu)
   target_include_directories(poly_expert_parity PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
                                                        ${_strata_gpu_include_directories})
   target_link_libraries(poly_expert_parity PRIVATE strata_poly_mmq strata_kernels ggml-cpu ggml-base
                                                   ${_strata_gpu_blas_target} ${_strata_gpu_runtime_target}
-                                                  Threads::Threads)
+                                                  Threads::Threads strata_kernels_cpu)
   # a read with the draft block repeats bit for bit; needs the model file, so it is run by hand:
   # poly_draft_race_test MODEL.gguf [RUNS] [LAYER_SPLIT]
   add_executable(poly_draft_race_test src/poly/draft_race_test.cpp src/poly/engine.cpp src/poly/glm5next.cpp
@@ -2079,7 +2079,7 @@ if(STRATA_NATIVE_EXPERTS AND (STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP) AND NOT S
                                                          ${_strata_gpu_include_directories})
   target_link_libraries(poly_draft_race_test PRIVATE strata_poly_mmq strata_kernels strata_spec ggml-cpu ggml-base
                                                     ${_strata_gpu_blas_target} ${_strata_gpu_runtime_target}
-                                                    ${_strata_poly_driver} Threads::Threads)
+                                                    ${_strata_poly_driver} Threads::Threads strata_kernels_cpu)
   # a prompt batch's routing on the card against the hosts' routing; needs a card, so it is run by hand
   add_executable(poly_route_test src/poly/route_test.cu src/poly/kernels.cu)
   target_include_directories(poly_route_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -2117,10 +2117,13 @@ if(STRATA_NATIVE_EXPERTS AND (STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP) AND NOT S
   target_include_directories(poly_dsv4_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
                                                    ${_strata_gpu_include_directories})
   target_link_libraries(poly_dsv4_test PRIVATE ${_strata_gpu_runtime_target})
+  add_executable(poly_cpu_iq_test src/poly/cpu_iq_test.cpp src/poly/cpu_experts.cpp)
+  target_include_directories(poly_cpu_iq_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${_strata_gpu_include_directories})
+  target_link_libraries(poly_cpu_iq_test PRIVATE strata_artifact strata_kernels_cpu ggml-cpu ggml-base Threads::Threads)
   # the pool of the CPU experts, without a model
   add_executable(poly_workers_test src/poly/workers_test.cpp src/poly/cpu_experts.cpp)
-  target_include_directories(poly_workers_test PRIVATE ${_strata_gg}/include)
-  target_link_libraries(poly_workers_test PRIVATE ggml-cpu ggml-base Threads::Threads)
+  target_include_directories(poly_workers_test PRIVATE ${_strata_gg}/include ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(poly_workers_test PRIVATE ggml-cpu ggml-base Threads::Threads strata_kernels_cpu)
   add_test(NAME poly_workers_test COMMAND poly_workers_test)
   # the card's MXFP4 product against ggml's dequantizer on random blocks, without a model; needs a card, run by hand
   add_executable(poly_mxfp4_test src/poly/mxfp4_test.cu)
