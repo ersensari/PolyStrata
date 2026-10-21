@@ -85,3 +85,18 @@ python bench/results/2026-10-21-ornith-iq-mt/compare.py \
 
 Run with only the test GPU visible and production inference stopped. The Python script restores the profile,
 warms the OS file cache, checks the unset path, and measures fresh processes with both flag states.
+
+## Local deployment check
+
+The operator's AtomicChat IQ3 config now selects the patched executable through a `strata-poly` launcher
+that sets `STRATA_POLY_IQ_MT=1` for this model alone. The launcher keeps that basename because the server
+uses it to choose the poly wire protocol. The previous executable and a config backup are retained; IQ4 and
+other models still select their original engines. The loaded process's binary hash and opt-in environment
+were checked directly. Q8 KV, 262144 maximum context and both attention opt-ins remained active.
+
+An API coding smoke request generated `is_balanced(text)` with inline assertions and completed normally:
+306 tokens, 35.4 tok/s by API timing, 141/175 accepted drafts. The returned function passed all 9331 bracket
+strings of lengths zero through five plus three strings containing ordinary characters, checked against a
+stack-based reference (9334 checks). This is one bounded functional test, not a coding-quality benchmark.
+Its timing is not an additional A/B comparison. API timing metrics are in `raw/api-smoke.json`.
+`poly_expert_parity` and `poly_draft_race_test` targets also built successfully; their GPU tests were not run.
